@@ -50,3 +50,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Build files
+build/
+
+# VS Code config files
+.vscode/
