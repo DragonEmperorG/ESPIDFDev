@@ -1,11 +1,13 @@
 /*
   *Copyright(C),2019-2022, LIESMARS
   *FileName:             // 文件名
-  *Author:  QIAN LONG    // 作者
-  *Version:              // 版本
-  *Date:                 // 完成日期
+  *Author: QIAN LONG     // 作者
+  *Version: 1.0.0        // 版本
+  *Date: 2019/3/23       // 完成日期
   *Description:          //用于主要说明此程序文件完成的主要功能与其他模块或函数的接口、输出值、取值范围、含义及参数间的控制、顺序、独立及依赖关系
   *Others:               //其他内容说明
+     1.泰斗D303-3模块需要通过通信接口选择开关选择Micro USB接口或RS232接口与上位机通信，
+  UART_SEL开关拨向左侧为RS232接口通信，拨向右侧为Micro USB接口通信，但是实验显示显示该开关不影响模块UART口发送数据。  
   *Function List:        //主要函数列表，每条记录应包含函数名及功能简要说明
      1.…………
      2.…………
@@ -20,8 +22,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include "driver/uart.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "nmea_parser.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -36,13 +40,18 @@
 // CTS(Clear To Send)
 #define CTS_TD_PIN (UART_PIN_NO_CHANGE)
 
-#define BUF_SIZE (1024)
+#define BUF_SIZE (960)
 #define TX_BUF_SIZE (BUF_SIZE)
+// 泰斗TD0D01固件数据帧最大长度为960字节，超过最大长度的都将视为无效数据。
 #define RX_BUF_SIZE (BUF_SIZE)
+// 泰斗D303-3模块默认波特率为9600bps
 #define BAUD_RATE (9600)
 
 #define CTRL_UART_PORT (UART_NUM_1)
 #define ECHO_UART_PORT (UART_NUM_2)
+
+#define TIME_ZONE (+8)   //Beijing Time
+#define YEAR_BASE (2000) //date in GPS starts from 2000
 
 static const char *TAG = "EPS32_D303-3_UART_APP";
 static const char *RX_TD_TASK_TAG = "RX_TD_TASK";
@@ -159,9 +168,45 @@ static void rx_td_task()
     free(data);
 }
 
+/**
+ * @brief GPS Event Handler
+ *
+ * @param event_handler_arg handler specific arguments
+ * @param event_base event base, here is fixed to ESP_NMEA_EVENT
+ * @param event_id event id
+ * @param event_data event specific arguments
+ */
+static void gps_event_handler(void *event_handler_arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    ESP_LOGI(TAG, "gps_event_handler begin");
+    gps_t *gps = NULL;
+    switch (event_id)
+    {
+    case GPS_UPDATE:
+        gps = (gps_t *)event_data;
+        /* print information parsed from GPS statements */
+        ESP_LOGI(TAG, "%d/%d/%d %d:%d:%d => \r\n"
+                      "\t\t\t\t\t\tlatitude   = %.05f°N\r\n"
+                      "\t\t\t\t\t\tlongtitude = %.05f°E\r\n"
+                      "\t\t\t\t\t\taltitude   = %.02fm\r\n"
+                      "\t\t\t\t\t\tspeed      = %fm/s",
+                 gps->date.year + YEAR_BASE, gps->date.month, gps->date.day,
+                 gps->tim.hour + TIME_ZONE, gps->tim.minute, gps->tim.second,
+                 gps->latitude, gps->longitude, gps->altitude, gps->speed);
+        break;
+    case GPS_UNKNOWN:
+        /* print unknown statements */
+        ESP_LOGW(TAG, "Unknown statement:%s", (char *)event_data);
+        break;
+    default:
+        ESP_LOGI(TAG, "gps_event_handler default output");
+        break;
+    }
+}
+
 void app_main()
 {
-    init();
+    // init();
 
     // Function
     // xTaskCreate()
@@ -172,5 +217,22 @@ void app_main()
     // pvParameters :
     // uxPriority :
     // pvCreatedTask :
-    xTaskCreate(rx_td_task, "uart_rx_td_task", 1024 * 2, NULL, configMAX_PRIORITIES, NULL);
+    // xTaskCreate(rx_td_task, "uart_rx_td_task", 1024 * 2, NULL, configMAX_PRIORITIES, NULL);
+
+    /* NMEA parser configuration */
+    nmea_parser_config_t config = NMEA_PARSER_CONFIG_DEFAULT();
+    /* init NMEA parser library */
+    nmea_parser_handle_t nmea_hdl = nmea_parser_init(&config);
+    /* register event handler for NMEA parser library */
+    // ESP_LOGI(TAG, "Execute nmea_parser_add_handler()");
+    esp_err_t nmea_parser_add_handler_err_code = nmea_parser_add_handler(nmea_hdl, gps_event_handler, NULL);
+
+    // ESP_LOGI(TAG, "Execute nmea_parser_add_handler() return: %d", nmea_parser_add_handler_err_code);
+
+    vTaskDelay(10000000 / portTICK_PERIOD_MS);
+
+    /* unregister event handler */
+    nmea_parser_remove_handler(nmea_hdl, gps_event_handler);
+    /* deinit NMEA parser library */
+    nmea_parser_deinit(nmea_hdl);
 }
