@@ -30,12 +30,34 @@
 #define NMEA_EVENT_LOOP_QUEUE_SIZE (16)
 
 /**
+ * @brief TD0D01 DATA FRAME buffer size
+ *
+ */
+#define TD0D01_DATA_FRAME_MAX_BUFFER_SIZE (960)
+
+/**
+ * @brief TD0D01 DATA FRAME Structure
+ *
+ */
+static const uint8_t DATA_FRAME_HEADER[] = {0x23, 0x3E};
+#define DATA_FRAME_HEADER_SIZE (2)
+#define DATA_FRAME_IDCODE_SIZE (2)
+#define DATA_FRAME_LENGTH_SIZE (2)
+#define DATA_FRAME_LENGTH_INDEX (DATA_FRAME_HEADER_SIZE + DATA_FRAME_IDCODE_SIZE)
+#define DATA_FRAME_CHKSUM_SIZE (2)
+
+/* DRAM_ATTR is required to avoid UART array placed in flash, due to accessed from ISR */
+static DRAM_ATTR uart_dev_t *const UART[UART_NUM_MAX] = {&UART0, &UART1, &UART2};
+
+/**
  * @brief Define of NMEA Parser Event base
  *
  */
 ESP_EVENT_DEFINE_BASE(ESP_NMEA_EVENT)
 
 static const char *GPS_TAG = "nmea_parser";
+
+static int event_count = 0;
 
 /**
  * @brief GPS parser library runtime structure
@@ -56,6 +78,10 @@ typedef struct
     gps_t parent;                                  /*!< Parent class */
     uart_port_t uart_port;                         /*!< Uart port number */
     uint8_t *buffer;                               /*!< Runtime buffer */
+    uint16_t data_length;                          /*!< Data length*/
+    uint8_t *data_frame_buffer;                    /*!< Data frame buffer */
+    uint8_t *data_frame_buffer_index;              /*!< Data frame buffer index*/
+    uint16_t data_frame_buffer_length;             /*!< Data frame buffer length*/
     esp_event_loop_handle_t event_loop_hdl;        /*!< Event loop handle */
     TaskHandle_t tsk_hdl;                          /*!< NMEA Parser task handle */
     QueueHandle_t event_queue;                     /*!< UART event queue handle */
@@ -618,18 +644,34 @@ static esp_err_t gps_decode(esp_gps_t *esp_gps, size_t len)
 }
 
 /**
+ * @brief Parse MEAS Data from GPS receiver
+ *
+ * @param data_frame uint8_t
+ * @param len number of bytes to decode
+ * @return esp_err_t ESP_OK on success, ESP_FAIL on error
+ */
+static esp_err_t meas_decode(uint8_t *data_frame, uint16_t len)
+{
+    ESP_LOGI(GPS_TAG, "ONE COMPLETE DATA FRAME");
+    return ESP_OK;
+}
+
+/**
  * @brief Handle when a pattern has been detected by uart
  *
  * @param esp_gps esp_gps_t type object
  */
 static void esp_handle_uart_pattern(esp_gps_t *esp_gps)
 {
-    // ESP_LOGI(GPS_TAG, "Start execute esp_handle_uart_pattern() ...");
+    ESP_LOGI(GPS_TAG, "Start execute esp_handle_uart_pattern() ...");
     int pos = uart_pattern_pop_pos(esp_gps->uart_port);
+
+    ESP_LOGI(GPS_TAG, "Get the nearest detected pattern position: %d", pos);
+
     if (pos != -1)
     {
         /* read one line(include '\n') */
-        int read_len = uart_read_bytes(esp_gps->uart_port, esp_gps->buffer, pos + 1, 100 / portTICK_PERIOD_MS);
+        int read_len = uart_read_bytes(esp_gps->uart_port, esp_gps->buffer, pos, 100 / portTICK_PERIOD_MS);
 
         /* make sure the line is a standard string */
         esp_gps->buffer[read_len] = '\0';
@@ -637,8 +679,8 @@ static void esp_handle_uart_pattern(esp_gps_t *esp_gps)
         if (read_len > 0)
         {
             ESP_LOGI(GPS_TAG, "%s", esp_gps->buffer);
-            // ESP_LOGI(GPS_TAG, "Read %d bytes: '%s'", read_len, esp_gps->buffer);
-            // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->buffer, read_len, ESP_LOG_INFO);
+            ESP_LOGI(GPS_TAG, "Read %d bytes: '%s'", read_len, esp_gps->buffer);
+            ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->buffer, read_len, ESP_LOG_INFO);
         }
 
         /* Send new line to handle */
@@ -652,7 +694,7 @@ static void esp_handle_uart_pattern(esp_gps_t *esp_gps)
         ESP_LOGW(GPS_TAG, "Pattern Queue Size too small");
         uart_flush_input(esp_gps->uart_port);
     }
-    // ESP_LOGI(GPS_TAG, "End execute esp_handle_uart_pattern() ...");
+    ESP_LOGI(GPS_TAG, "End execute esp_handle_uart_pattern() ...");
 }
 
 /**
@@ -664,19 +706,81 @@ static void nmea_parser_task_entry(void *arg)
 {
     esp_gps_t *esp_gps = (esp_gps_t *)arg;
     uart_event_t event;
+
+    /* 处理完整数据帧流程 */
+
     while (1)
     {
         if (xQueueReceive(esp_gps->event_queue, &event, pdMS_TO_TICKS(200)))
         {
-            // ESP_LOGI(GPS_TAG, "Dealing with one event ... ");
+            event_count = event_count + 1;
+            ESP_LOGI(GPS_TAG, "Dealing with %d event in queue ...", event_count);
             switch (event.type)
             {
             case UART_DATA:
                 ESP_LOGI(GPS_TAG, "Dealing with UART_DATA event");
+
+                int length = 0;
+                ESP_ERROR_CHECK(uart_get_buffered_data_len(esp_gps->uart_port, (size_t *)&length));
+                length = uart_read_bytes(esp_gps->uart_port, esp_gps->buffer, length, 1000 / portTICK_RATE_MS);
+
+                if (length > 0)
+                {
+                    esp_gps->buffer[length] = 0;
+                    ESP_LOGI(GPS_TAG, "Read %d bytes: '%s'", length, esp_gps->buffer);
+                    ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->buffer, length, ESP_LOG_INFO);
+                }
+
+                /* 判断本次读取的数据以何种方式进行处理 */
+                if (esp_gps->data_frame_buffer_length == 0)
+                {
+                    bool has_frame_header = true;
+                    for (int i = 0; i < DATA_FRAME_HEADER_SIZE; i++)
+                    {
+                        if (has_frame_header)
+                        {
+                            if (esp_gps->buffer[i] != DATA_FRAME_HEADER[i])
+                            {
+                                has_frame_header = false;
+                            }
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    if (has_frame_header)
+                    {
+                        memcpy(esp_gps->data_frame_buffer_index, esp_gps->buffer, length);
+                        esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer_index + length;
+                        esp_gps->data_frame_buffer_length = esp_gps->data_frame_buffer_length + length;
+                        // ESP_LOGI(GPS_TAG, "Data Frame Date Length: %d %d %d", esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX], esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1], esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX] + esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1] * 256);
+                        esp_gps->data_length = esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX] + esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1] * 256;
+                    }
+                }
+                else if (esp_gps->data_frame_buffer_length > 0 && esp_gps->data_frame_buffer_length <= TD0D01_DATA_FRAME_MAX_BUFFER_SIZE)
+                {
+                    memcpy(esp_gps->data_frame_buffer_index, esp_gps->buffer, length);
+                    esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer_index + length;
+                    esp_gps->data_frame_buffer_length = esp_gps->data_frame_buffer_length + length;
+                    ESP_LOGI(GPS_TAG, "data_frame_buffer_length: %d", esp_gps->data_frame_buffer_length);
+                    ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length, ESP_LOG_INFO);
+
+                    if (esp_gps->data_frame_buffer_length == esp_gps->data_length + 8)
+                    {
+                        meas_decode(esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length);
+                        memset(esp_gps->data_frame_buffer, 0, sizeof(uint8_t) * TD0D01_DATA_FRAME_MAX_BUFFER_SIZE);
+                        esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer;
+                        esp_gps->data_frame_buffer_length = 0;
+                    }
+                }
                 break;
             case UART_FIFO_OVF:
                 ESP_LOGW(GPS_TAG, "HW FIFO Overflow");
-                uart_flush(esp_gps->uart_port);
+                if (uart_flush(esp_gps->uart_port) != ESP_OK)
+                {
+                    ESP_LOGE(GPS_TAG, "UART ring buffer flush failed");
+                }
                 xQueueReset(esp_gps->event_queue);
                 break;
             case UART_BUFFER_FULL:
@@ -694,7 +798,7 @@ static void nmea_parser_task_entry(void *arg)
                 ESP_LOGE(GPS_TAG, "Frame Error");
                 break;
             case UART_PATTERN_DET:
-                // ESP_LOGI(GPS_TAG, "Dealing with UART_PATTERN_DET event");
+                ESP_LOGI(GPS_TAG, "Dealing with UART_PATTERN_DET event");
                 esp_handle_uart_pattern(esp_gps);
                 break;
             default:
@@ -707,6 +811,22 @@ static void nmea_parser_task_entry(void *arg)
     }
     vTaskDelete(NULL);
 }
+
+/**
+ * @brief Customed Interrupts
+ *
+ * @param arg Configuration of Customed Interrupts
+ */
+//中断服务函数放在IRAM中执行，所以在这里定义的时候要添加IRAM_ATTR
+// static void IRAM_ATTR customed_uart_intr_handler(void *arg)
+// {
+//     esp_gps_t *esp_gps = (esp_gps_t *)arg;
+//     uint8_t uart_num = esp_gps->uart_port;
+//     volatile uart_dev_t *uart = UART[uart_num];
+//     uint8_t recSize = 0;
+//     uart->int_clr.rxfifo_full = 1;
+//     uart->int_clr.frm_err = 1;
+// }
 
 /**
  * @brief Init NMEA Parser
@@ -722,12 +842,20 @@ nmea_parser_handle_t nmea_parser_init(const nmea_parser_config_t *config)
         ESP_LOGE(GPS_TAG, "calloc memory for esp_fps failed");
         goto err_gps;
     }
-    esp_gps->buffer = calloc(1, NMEA_PARSER_RUNTIME_BUFFER_SIZE);
+    esp_gps->buffer = calloc(NMEA_PARSER_RUNTIME_BUFFER_SIZE, sizeof(uint8_t));
     if (!esp_gps->buffer)
     {
         ESP_LOGE(GPS_TAG, "calloc memory for runtime buffer failed");
         goto err_buffer;
     }
+    esp_gps->data_frame_buffer = calloc(TD0D01_DATA_FRAME_MAX_BUFFER_SIZE, sizeof(uint8_t));
+    if (!esp_gps->data_frame_buffer)
+    {
+        ESP_LOGE(GPS_TAG, "calloc memory for data frame buffer failed");
+        goto err_data_frame;
+    }
+    esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer;
+    esp_gps->data_frame_buffer_length = 0;
 #if CONFIG_NMEA_STATEMENT_GSA
     esp_gps->all_statements |= (1 << STATEMENT_GSA);
 #endif
@@ -749,18 +877,20 @@ nmea_parser_handle_t nmea_parser_init(const nmea_parser_config_t *config)
     /* Set attributes */
     esp_gps->uart_port = config->uart.uart_port;
     esp_gps->all_statements &= 0xFE;
-    /* Install UART friver */
+    /* Install UART driver */
     uart_config_t uart_config = {
         .baud_rate = config->uart.baud_rate,
         .data_bits = config->uart.data_bits,
         .parity = config->uart.parity,
         .stop_bits = config->uart.stop_bits,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+        .flow_ctrl = config->uart.flow_ctrl,
+        .rx_flow_ctrl_thresh = config->uart.rx_flow_ctrl_thresh};
     if (uart_param_config(esp_gps->uart_port, &uart_config) != ESP_OK)
     {
         ESP_LOGE(GPS_TAG, "config uart parameter failed");
         goto err_uart_config;
     }
+
     if (uart_set_pin(esp_gps->uart_port, UART_PIN_NO_CHANGE, config->uart.rx_pin,
                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK)
     {
@@ -773,11 +903,43 @@ nmea_parser_handle_t nmea_parser_init(const nmea_parser_config_t *config)
         ESP_LOGE(GPS_TAG, "install uart driver failed");
         goto err_uart_install;
     }
+    /* Configure UART interrupts */
+    /* 配置UART中断需要在uart_driver_install()函数执行后设置，否则在安装驱动时配置的中断会被默认值替换掉 */
+    // uart_intr_config_t uart_intr = {
+    //     .intr_enable_mask = config->uart.intr_enable_mask,
+    //     .rxfifo_full_thresh = config->uart.rxfifo_full_thresh,
+    //     .rx_timeout_thresh = config->uart.rx_timeout_thresh,
+    //     .txfifo_empty_intr_thresh = config->uart.txfifo_empty_intr_thresh};
+    // if (uart_intr_config(esp_gps->uart_port, &uart_intr) != ESP_OK)
+    // {
+    //     ESP_LOGE(GPS_TAG, "config uart interrupts failed");
+    //     goto err_uart_config;
+    // }
+    // if (uart_enable_rx_intr(esp_gps->uart_port) != ESP_OK)
+    // {
+    //     ESP_LOGE(GPS_TAG, "enable uart rx interrupts failed");
+    //     goto err_uart_config;
+    // }
     /* Set pattern interrupt, used to detect the end of a line */
-    uart_enable_pattern_det_intr(esp_gps->uart_port, '\r\n', 1, 10000, 10, 10);
+    // char uart_enable_pattern_det_intr_pattern_chr = '\n';
+    // uart_enable_pattern_det_intr(esp_gps->uart_port, uart_enable_pattern_det_intr_pattern_chr, 1, 10000, 10, 10);
     /* Set pattern queue size */
-    uart_pattern_queue_reset(esp_gps->uart_port, config->uart.event_queue_size);
-    uart_flush(esp_gps->uart_port);
+    // uart_pattern_queue_reset(esp_gps->uart_port, config->uart.event_queue_size);
+    // uart_flush(esp_gps->uart_port);
+
+    /* Configure customed UART interrupts */
+    // 这里是关键点，必须要先uart_driver_install安装驱动，再把中断服务给释放掉
+    // if (uart_isr_free(esp_gps->uart_port) != ESP_OK)
+    // {
+    //     ESP_LOGE(GPS_TAG, "free an handler to service interrupts failed");
+    //     goto err_uart_isr_free;
+    // }
+    // 重新注册中断服务函数
+    // uart_isr_handle_t handle;
+    // uart_isr_register(esp_gps->uart_port, customed_uart_intr_handler, &esp_gps, ESP_INTR_FLAG_LOWMED | ESP_INTR_FLAG_IRAM, &handle);
+    // 使能串口接收中断
+    // uart_enable_rx_intr(esp_gps->uart_port);
+
     /* Create Event loop */
     esp_event_loop_args_t loop_args = {
         .queue_size = NMEA_EVENT_LOOP_QUEUE_SIZE,
@@ -806,9 +968,12 @@ nmea_parser_handle_t nmea_parser_init(const nmea_parser_config_t *config)
 err_task_create:
     esp_event_loop_delete(esp_gps->event_loop_hdl);
 err_eloop:
+// err_uart_isr_free:
 err_uart_install:
     uart_driver_delete(esp_gps->uart_port);
 err_uart_config:
+err_data_frame:
+    free(esp_gps->data_frame_buffer);
 err_buffer:
     free(esp_gps->buffer);
 err_gps:

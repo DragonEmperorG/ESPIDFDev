@@ -32,29 +32,11 @@
 #include "freertos/queue.h"
 #include "soc/uart_struct.h"
 
-// UART PIN
-#define TXD_TD_PIN (GPIO_NUM_4)
-#define RXD_TD_PIN (GPIO_NUM_5)
-// RTS(Request To Send)
-#define RTS_TD_PIN (UART_PIN_NO_CHANGE)
-// CTS(Clear To Send)
-#define CTS_TD_PIN (UART_PIN_NO_CHANGE)
-
-#define BUF_SIZE (960)
-#define TX_BUF_SIZE (BUF_SIZE)
-// 泰斗TD0D01固件数据帧最大长度为960字节，超过最大长度的都将视为无效数据。
-#define RX_BUF_SIZE (BUF_SIZE)
-// 泰斗D303-3模块默认波特率为9600bps
-#define BAUD_RATE (9600)
-
-#define CTRL_UART_PORT (UART_NUM_1)
-#define ECHO_UART_PORT (UART_NUM_2)
-
 #define TIME_ZONE (+8)   //Beijing Time
 #define YEAR_BASE (2000) //date in GPS starts from 2000
 
 static const char *TAG = "EPS32_D303-3_UART_APP";
-static const char *RX_TD_TASK_TAG = "RX_TD_TASK";
+// static const char *RX_TD_TASK_TAG = "RX_TD_TASK";
 
 // void echo_platform_infomation()
 // {
@@ -84,6 +66,7 @@ static const char *RX_TD_TASK_TAG = "RX_TD_TASK";
 //     esp_restart();
 // }
 
+/**
 void init()
 {
     // Set UART log level
@@ -137,7 +120,9 @@ void init()
     ESP_LOGI(TAG, "UART install driver.");
     ESP_ERROR_CHECK(uart_driver_install(CTRL_UART_PORT, RX_BUF_SIZE * 2, 0, 0, NULL, 0));
 }
+*/
 
+/**
 static void rx_td_task()
 {
     esp_log_level_set(RX_TD_TASK_TAG, ESP_LOG_INFO);
@@ -167,6 +152,7 @@ static void rx_td_task()
     }
     free(data);
 }
+*/
 
 /**
  * @brief GPS Event Handler
@@ -227,12 +213,12 @@ void app_main()
     // ESP_LOGI(TAG, "Execute nmea_parser_add_handler()");
     esp_err_t nmea_parser_add_handler_err_code = nmea_parser_add_handler(nmea_hdl, gps_event_handler, NULL);
 
-    // ESP_LOGI(TAG, "Execute nmea_parser_add_handler() return: %d", nmea_parser_add_handler_err_code);
+    ESP_LOGI(TAG, "Execute nmea_parser_add_handler() return: %d", nmea_parser_add_handler_err_code);
 
-    vTaskDelay(10000000 / portTICK_PERIOD_MS);
+    // vTaskDelay(10000000 / portTICK_PERIOD_MS);
 
     /* unregister event handler */
-    nmea_parser_remove_handler(nmea_hdl, gps_event_handler);
+    // nmea_parser_remove_handler(nmea_hdl, gps_event_handler);
     /* deinit NMEA parser library */
-    nmea_parser_deinit(nmea_hdl);
+    // nmea_parser_deinit(nmea_hdl);
 }
