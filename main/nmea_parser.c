@@ -41,9 +41,12 @@
  */
 static const uint8_t DATA_FRAME_HEADER[] = {0x23, 0x3E};
 #define DATA_FRAME_HEADER_SIZE (2)
+#define DATA_FRAME_HEADER_INDEX (0)
 #define DATA_FRAME_IDCODE_SIZE (2)
+#define DATA_FRAME_IDCODE_INDEX (DATA_FRAME_HEADER_INDEX + DATA_FRAME_HEADER_SIZE)
 #define DATA_FRAME_LENGTH_SIZE (2)
-#define DATA_FRAME_LENGTH_INDEX (DATA_FRAME_HEADER_SIZE + DATA_FRAME_IDCODE_SIZE)
+#define DATA_FRAME_LENGTH_INDEX (DATA_FRAME_IDCODE_INDEX + DATA_FRAME_IDCODE_SIZE)
+#define DATA_FRAME_DATA_INDEX (DATA_FRAME_LENGTH_INDEX + DATA_FRAME_LENGTH_SIZE)
 #define DATA_FRAME_CHKSUM_SIZE (2)
 
 /* DRAM_ATTR is required to avoid UART array placed in flash, due to accessed from ISR */
@@ -643,6 +646,49 @@ static esp_err_t gps_decode(esp_gps_t *esp_gps, size_t len)
     return ESP_OK;
 }
 
+static double ieee754_double_8_decode(uint8_t *dex_data)
+{
+    uint8_t ieee754_double_sign;
+    uint16_t ieee754_double_exponent;
+    double ieee754_double_mantissa, decoded_data;
+    uint64_t bin_dex_data = 0, bin_dex_data_tmp;
+
+    for (int i = 7; i >= 0; i--)
+    {
+        bin_dex_data = bin_dex_data << 8;
+        // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
+        bin_dex_data = bin_dex_data | dex_data[i];
+    }
+
+    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
+    /* 取IEEE754数据块的高位提取 符号位(1bit) */
+    // 0x80    1000 0000
+    ieee754_double_sign = dex_data[DATA_FRAME_DATA_INDEX + 7] & 0x80;
+    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &ieee754_double_sign, 1, ESP_LOG_INFO);
+    ieee754_double_sign = (ieee754_double_sign) ? 1 : 0;
+    // ESP_LOGI(GPS_TAG, "IEEE754 Double Sign: %d", ieee754_double_sign);
+
+    /* 取IEEE754数据块的高位提取 指数部分(11bit) */
+    // 0x07FF    0000 0111 1111 1111
+    ieee754_double_exponent = bin_dex_data >> 52;
+    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &ieee754_double_exponent, 2, ESP_LOG_INFO);
+    ieee754_double_exponent = ieee754_double_exponent & 0x7FF;
+    // ESP_LOGI(GPS_TAG, "IEEE754 Double Exponent: %d", ieee754_double_exponent);
+
+    /* 取IEEE754数据块的低位提取 尾数部分(52bit) */
+    // 0x0FFFFFFFFFFFFF    0000 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111
+    // 0x10000000000000    0001 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000‬
+    bin_dex_data_tmp = bin_dex_data & 0xFFFFFFFFFFFFF;
+    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data_tmp, 8, ESP_LOG_INFO);
+    ieee754_double_mantissa = (double)bin_dex_data_tmp / 0x10000000000000;
+    // ESP_LOGI(GPS_TAG, "IEEE754 Double Mantissa: %f", ieee754_double_mantissa);
+
+    decoded_data = pow(-1.0, ieee754_double_sign) * (1.0 + ieee754_double_mantissa) * pow(2.0, (ieee754_double_exponent - 1023.0));
+    // ESP_LOGI(GPS_TAG, "IEEE754 Double: %f", decoded_data);
+
+    return decoded_data;
+}
+
 /**
  * @brief Parse MEAS Data from GPS receiver
  *
@@ -653,6 +699,11 @@ static esp_err_t gps_decode(esp_gps_t *esp_gps, size_t len)
 static esp_err_t meas_decode(uint8_t *data_frame, uint16_t len)
 {
     ESP_LOGI(GPS_TAG, "ONE COMPLETE DATA FRAME");
+
+    double tow;
+    tow = ieee754_double_8_decode(data_frame + 6);
+    ESP_LOGI(GPS_TAG, "观测时刻TOW: %f", tow);
+
     return ESP_OK;
 }
 
@@ -754,8 +805,9 @@ static void nmea_parser_task_entry(void *arg)
                         memcpy(esp_gps->data_frame_buffer_index, esp_gps->buffer, length);
                         esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer_index + length;
                         esp_gps->data_frame_buffer_length = esp_gps->data_frame_buffer_length + length;
-                        // ESP_LOGI(GPS_TAG, "Data Frame Date Length: %d %d %d", esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX], esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1], esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX] + esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1] * 256);
-                        esp_gps->data_length = esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX] + esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1] * 256;
+                        /* Decode data frame data length*/
+                        esp_gps->data_length = esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX + 1] << 8;
+                        esp_gps->data_length = esp_gps->data_length | esp_gps->data_frame_buffer[DATA_FRAME_LENGTH_INDEX];
                     }
                 }
                 else if (esp_gps->data_frame_buffer_length > 0 && esp_gps->data_frame_buffer_length <= TD0D01_DATA_FRAME_MAX_BUFFER_SIZE)

@@ -132,6 +132,16 @@ extern "C"
    } gps_t;
 
    /**
+ * @brief MEAS object
+ *
+ */
+   typedef struct
+   {
+      double latitude;                                                /*!< Latitude (degrees) */
+      float longitude;                                               /*!< Longitude (degrees) */
+   } gnss_meas_t;
+
+   /**
  * @brief Configuration of NMEA Parser
  *
  */
