@@ -49,6 +49,19 @@ static const uint8_t DATA_FRAME_HEADER[] = {0x23, 0x3E};
 #define DATA_FRAME_DATA_INDEX (DATA_FRAME_LENGTH_INDEX + DATA_FRAME_LENGTH_SIZE)
 #define DATA_FRAME_CHKSUM_SIZE (2)
 
+// #define I8S (1)
+// #define I8U (1)
+// #define I16S (2)
+// #define I16U (2)
+// #define I32S (4)
+// #define I32U (4)
+// #define F32 (4)
+// #define F64 (8)
+// #define B8 (1)
+// #define B16 (2)
+// #define B32 (3)
+// #define CH (1)
+
 /* DRAM_ATTR is required to avoid UART array placed in flash, due to accessed from ISR */
 static DRAM_ATTR uart_dev_t *const UART[UART_NUM_MAX] = {&UART0, &UART1, &UART2};
 
@@ -59,6 +72,7 @@ static DRAM_ATTR uart_dev_t *const UART[UART_NUM_MAX] = {&UART0, &UART1, &UART2}
 ESP_EVENT_DEFINE_BASE(ESP_NMEA_EVENT)
 
 static const char *GPS_TAG = "nmea_parser";
+static const char *MEAS_TAG = "meas_parser";
 
 static int event_count = 0;
 
@@ -646,6 +660,120 @@ static esp_err_t gps_decode(esp_gps_t *esp_gps, size_t len)
     return ESP_OK;
 }
 
+/**
+ * @brief Decode Complement Signed Char Data(I8S)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data int8_t
+ */
+static int8_t complement_signed_char_1_decode(uint8_t *dex_data)
+{
+    uint8_t bin_dex_data = dex_data[0];
+    int8_t decoded_data;
+
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 1, ESP_LOG_INFO);
+    // ESP_LOGI(MEAS_TAG, "Complement uint8_t: %d", bin_dex_data);
+    decoded_data = bin_dex_data;
+    // ESP_LOGI(MEAS_TAG, "Complement signed char: %d", decoded_data);
+
+    return decoded_data;
+}
+
+/**
+ * @brief Decode Complement Unigned Char Data(I8U)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data unsigned char
+ */
+static uint8_t complement_unsigned_char_1_decode(uint8_t *dex_data)
+{
+    // ESP_LOGI(MEAS_TAG, "complement_unsigned_char_1_decode()");
+    uint8_t bin_dex_data = dex_data[0];
+    uint8_t decoded_data;
+
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 1, ESP_LOG_INFO);
+    // ESP_LOGI(MEAS_TAG, "Complement uint8_t: %d", bin_dex_data);
+    decoded_data = bin_dex_data;
+    // ESP_LOGI(MEAS_TAG, "Complement unsigned char: %d", decoded_data);
+
+    return decoded_data;
+}
+
+/**
+ * @brief Decode Complement Unsigned Short Data(I16U)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data unsigned short
+ */
+static uint16_t complement_unsigned_short_2_decode(uint8_t *dex_data)
+{
+    uint16_t bin_dex_data;
+    uint16_t decoded_data;
+
+    bin_dex_data = dex_data[1] << 8;
+    bin_dex_data = bin_dex_data | dex_data[0];
+    // ESP_LOGI(MEAS_TAG, "Complement uint16_t: %d", bin_dex_data);
+    decoded_data = bin_dex_data;
+    // ESP_LOGI(MEAS_TAG, "Complement unsigned short: %d", decoded_data);
+
+    return decoded_data;
+}
+
+/**
+ * @brief Decode IEEE754 Single Precision Float Data(F64)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data float
+ */
+static float ieee754_float_4_decode(uint8_t *dex_data)
+{
+    uint8_t ieee754_float_sign;
+    uint16_t ieee754_float_exponent;
+    float ieee754_float_mantissa, decoded_data;
+    uint32_t bin_dex_data = 0, bin_dex_data_tmp;
+
+    for (int i = 3; i >= 0; i--)
+    {
+        bin_dex_data = bin_dex_data << 8;
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 4, ESP_LOG_INFO);
+        bin_dex_data = bin_dex_data | dex_data[i];
+    }
+
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 4, ESP_LOG_INFO);
+    /* 取IEEE754数据块的高位提取 符号位(1bit) */
+    // 0x80    1000 0000
+    ieee754_float_sign = dex_data[3] & 0x80;
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &ieee754_float_sign, 1, ESP_LOG_INFO);
+    ieee754_float_sign = (ieee754_float_sign) ? 1 : 0;
+    // ESP_LOGI(MEAS_TAG, "IEEE754 Float Sign: %d", ieee754_float_sign);
+
+    /* 取IEEE754数据块的高位提取 指数部分(8bit) */
+    // 0xFF    1111 1111
+    ieee754_float_exponent = bin_dex_data >> 23;
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &ieee754_float_exponent, 2, ESP_LOG_INFO);
+    ieee754_float_exponent = ieee754_float_exponent & 0xFF;
+    // ESP_LOGI(MEAS_TAG, "IEEE754 Float Exponent: %d", ieee754_float_exponent);
+
+    /* 取IEEE754数据块的低位提取 尾数部分(23bit) */
+    // 0x7FFFFF    0111 1111 1111 1111 1111 1111
+    // 0x800000    1000 0000 0000 0000 0000 0000‬
+    bin_dex_data_tmp = bin_dex_data & 0x7FFFFF;
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data_tmp, 8, ESP_LOG_INFO);
+    ieee754_float_mantissa = (float)bin_dex_data_tmp / 0x800000;
+    // ESP_LOGI(MEAS_TAG, "IEEE754 Float Mantissa: %f", ieee754_float_mantissa);
+
+    decoded_data = pow(-1.0, ieee754_float_sign) * (1.0 + ieee754_float_mantissa) * pow(2.0, (ieee754_float_exponent - 127.0));
+    // ESP_LOGI(MEAS_TAG, "IEEE754 Float: %f", decoded_data);
+
+    return decoded_data;
+}
+
+/**
+ * @brief Decode IEEE754 Double Precision Float Data(F64)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data double
+ */
 static double ieee754_double_8_decode(uint8_t *dex_data)
 {
     uint8_t ieee754_double_sign;
@@ -656,37 +784,163 @@ static double ieee754_double_8_decode(uint8_t *dex_data)
     for (int i = 7; i >= 0; i--)
     {
         bin_dex_data = bin_dex_data << 8;
-        // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
         bin_dex_data = bin_dex_data | dex_data[i];
     }
 
-    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
+    ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 8, ESP_LOG_INFO);
     /* 取IEEE754数据块的高位提取 符号位(1bit) */
     // 0x80    1000 0000
     ieee754_double_sign = dex_data[DATA_FRAME_DATA_INDEX + 7] & 0x80;
-    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &ieee754_double_sign, 1, ESP_LOG_INFO);
+    ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &ieee754_double_sign, 1, ESP_LOG_INFO);
     ieee754_double_sign = (ieee754_double_sign) ? 1 : 0;
-    // ESP_LOGI(GPS_TAG, "IEEE754 Double Sign: %d", ieee754_double_sign);
+    ESP_LOGI(MEAS_TAG, "IEEE754 Double Sign: %d", ieee754_double_sign);
 
     /* 取IEEE754数据块的高位提取 指数部分(11bit) */
     // 0x07FF    0000 0111 1111 1111
     ieee754_double_exponent = bin_dex_data >> 52;
-    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &ieee754_double_exponent, 2, ESP_LOG_INFO);
+    ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &ieee754_double_exponent, 2, ESP_LOG_INFO);
     ieee754_double_exponent = ieee754_double_exponent & 0x7FF;
-    // ESP_LOGI(GPS_TAG, "IEEE754 Double Exponent: %d", ieee754_double_exponent);
+    ESP_LOGI(MEAS_TAG, "IEEE754 Double Exponent: %d", ieee754_double_exponent);
 
     /* 取IEEE754数据块的低位提取 尾数部分(52bit) */
     // 0x0FFFFFFFFFFFFF    0000 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111
     // 0x10000000000000    0001 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000‬
     bin_dex_data_tmp = bin_dex_data & 0xFFFFFFFFFFFFF;
-    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, &bin_dex_data_tmp, 8, ESP_LOG_INFO);
+    ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data_tmp, 8, ESP_LOG_INFO);
     ieee754_double_mantissa = (double)bin_dex_data_tmp / 0x10000000000000;
-    // ESP_LOGI(GPS_TAG, "IEEE754 Double Mantissa: %f", ieee754_double_mantissa);
+    ESP_LOGI(MEAS_TAG, "IEEE754 Double Mantissa: %f", ieee754_double_mantissa);
 
     decoded_data = pow(-1.0, ieee754_double_sign) * (1.0 + ieee754_double_mantissa) * pow(2.0, (ieee754_double_exponent - 1023.0));
-    // ESP_LOGI(GPS_TAG, "IEEE754 Double: %f", decoded_data);
+    // ESP_LOGI(MEAS_TAG, "IEEE754 Double: %f", decoded_data);
 
     return decoded_data;
+}
+
+/**
+ * @brief Decode Bit Field Data(B8)
+ *
+ * @param dex_data uint8_t*
+ * @return decoded_data signed char
+ */
+static uint8_t complement_bit_field_1_decode(uint8_t *dex_data)
+{
+    uint8_t bin_dex_data = dex_data[0];
+    uint8_t decoded_data;
+
+    // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, &bin_dex_data, 1, ESP_LOG_INFO);
+    // ESP_LOGI(MEAS_TAG, "Complement uint8_t: %d", bin_dex_data);
+    decoded_data = bin_dex_data;
+    // ESP_LOGI(MEAS_TAG, "Complement signed char: %d", decoded_data);
+
+    return decoded_data;
+}
+
+static char *complement_bit_field_1_to_binary(uint8_t dec_data)
+{
+    static char bin_data[8];
+    itoa((int)dec_data, bin_data, 2);
+    // ESP_LOGI(MEAS_TAG, "Binary Format: %s", bin_data);
+
+    return bin_data;
+}
+
+/**
+ * @brief Format BDS Time System to Calendar Time
+ *
+ * @param tow double
+ * @param wn unsigned short
+ * @return void
+ */
+static void bds_to_calendar_time(double bds_tow, uint16_t wn)
+{
+    calendar_time_t calendar_time;
+}
+
+/**
+ * @brief Format BDS Time System to Calendar Time
+ *
+ * @param tow double
+ * @param wn unsigned short
+ * @return void
+ */
+static char *get_gnss_category(uint8_t gnss_category_code)
+{
+    char *gnss_category_value = '\0';
+
+    switch (gnss_category_code)
+    {
+    case 1:
+        gnss_category_value = "BDS";
+        break;
+    case 2:
+        gnss_category_value = "GPS";
+        break;
+    case 3:
+        gnss_category_value = "GLONASS";
+        break;
+
+    default:
+        break;
+    }
+
+    return gnss_category_value;
+}
+
+/**
+ * @brief Get TD0D01 Data Type Bytes Number
+ *
+ * @param data_frame enum td0d01_data_t
+ * @return bytes_number uint8_t
+ */
+uint8_t get_td0d01_data_type_byte(td0d01_data_t td0d01_data_type)
+{
+    uint8_t byte_number = 0;
+
+    switch (td0d01_data_type)
+    {
+    case I8S:
+        byte_number = 1;
+        break;
+    case I8U:
+        byte_number = 1;
+        break;
+    case I16S:
+        byte_number = 2;
+        break;
+    case I16U:
+        byte_number = 2;
+        break;
+    case I32S:
+        byte_number = 4;
+        break;
+    case I32U:
+        byte_number = 4;
+        break;
+    case F32:
+        byte_number = 4;
+        break;
+    case F64:
+        byte_number = 8;
+        break;
+    case B8:
+        byte_number = 1;
+        break;
+    case B16:
+        byte_number = 2;
+        break;
+    case B32:
+        byte_number = 3;
+        break;
+    case CH:
+        byte_number = 1;
+        break;
+
+    default:
+        break;
+    }
+
+    return byte_number;
 }
 
 /**
@@ -698,12 +952,80 @@ static double ieee754_double_8_decode(uint8_t *dex_data)
  */
 static esp_err_t meas_decode(uint8_t *data_frame, uint16_t len)
 {
-    ESP_LOGI(GPS_TAG, "ONE COMPLETE DATA FRAME");
+    ESP_LOGI(MEAS_TAG, "*** ONE COMPLETE MEAS DATA FRAME ***");
+    uint8_t *d = data_frame;
+    // gnss_meas_data_t *gnss_meas_data = calloc(1, sizeof(gnss_meas_data_t));
+    // gnss_meas_data->observations[0] = calloc(1, sizeof(struct gnss_meas_repeat_data));
+    gnss_meas_data_t gnss_meas_data;
 
-    double tow;
-    tow = ieee754_double_8_decode(data_frame + 6);
-    ESP_LOGI(GPS_TAG, "观测时刻TOW: %f", tow);
+    // Max data length: 960 - 2 - 2 - 2 - 2 = 952
+    // Max repeat data length: 952 - 12 = 940
+    // Max repeat data number: 940 / 26 = 36
+    td0d01_data_t meas_data_header_structure[4] = {F64, I16U, I8S, I8U};
+    td0d01_data_t meas_data_repeat_structure[8] = {I8U, I8U, I8U, F64, F64, F32, I16U, B8};
 
+    d = d + DATA_FRAME_DATA_INDEX;
+
+    gnss_meas_data.obs_second = ieee754_double_8_decode(d);
+    ESP_LOGI(MEAS_TAG, "观测时刻TOW: %f s", gnss_meas_data.obs_second);
+    d = d + get_td0d01_data_type_byte(meas_data_header_structure[0]);
+
+    gnss_meas_data.obs_week = complement_unsigned_short_2_decode(d);
+    ESP_LOGI(MEAS_TAG, "观测时刻WN: %d week", gnss_meas_data.obs_week);
+    d = d + get_td0d01_data_type_byte(meas_data_header_structure[1]);
+
+    gnss_meas_data.utc_leap_second = complement_signed_char_1_decode(d);
+    ESP_LOGI(MEAS_TAG, "UTC闰秒: %d s", gnss_meas_data.utc_leap_second);
+    d = d + get_td0d01_data_type_byte(meas_data_header_structure[2]);
+
+    gnss_meas_data.obs_num = complement_unsigned_char_1_decode(d);
+    ESP_LOGI(MEAS_TAG, "观测量个数: %d", gnss_meas_data.obs_num);
+    d = d + get_td0d01_data_type_byte(meas_data_header_structure[3]);
+
+    for (int i = 0; i < gnss_meas_data.obs_num; i++)
+    {
+        // int i = 0;
+        // gnss_meas_data.observations[i].gnss_category = '1';
+        // ESP_LOGI(MEAS_TAG, "Test Structure Initialzation: %s", get_gnss_category(gnss_meas_data.observations[i].gnss_category));
+
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 1, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].gnss_category = complement_unsigned_char_1_decode(d);
+        ESP_LOGI(MEAS_TAG, "GNSS类别: %s", get_gnss_category(gnss_meas_data.observations[i].gnss_category));
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[0]);
+
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 1, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].satellite_id = complement_unsigned_char_1_decode(d);
+        ESP_LOGI(MEAS_TAG, "卫星ID: %d", gnss_meas_data.observations[i].satellite_id);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[1]);
+
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 1, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].cn0 = complement_unsigned_char_1_decode(d);
+        ESP_LOGI(MEAS_TAG, "CN0: %d", gnss_meas_data.observations[i].cn0);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[2]);
+
+        ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 8, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].pseudorange = ieee754_double_8_decode(d);
+        ESP_LOGI(MEAS_TAG, "伪距: %f m", gnss_meas_data.observations[i].pseudorange);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[3]);
+
+        gnss_meas_data.observations[i].carrier_phase = ieee754_double_8_decode(d);
+        ESP_LOGI(MEAS_TAG, "载波相位: %f cycles", gnss_meas_data.observations[i].carrier_phase);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[4]);
+
+        gnss_meas_data.observations[i].doppler = ieee754_float_4_decode(d);
+        ESP_LOGI(MEAS_TAG, "多普勒: %f Hz", gnss_meas_data.observations[i].doppler);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[5]);
+
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 2, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].carrier_phase_locking_time = complement_unsigned_short_2_decode(d);
+        ESP_LOGI(MEAS_TAG, "载波相位锁定时间: %d ms", gnss_meas_data.observations[i].carrier_phase_locking_time);
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[6]);
+
+        // ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, d, 1, ESP_LOG_INFO);
+        gnss_meas_data.observations[i].sign = complement_bit_field_1_decode(d);
+        ESP_LOGI(GPS_TAG, "标志: %s", complement_bit_field_1_to_binary(gnss_meas_data.observations[i].sign));
+        d = d + get_td0d01_data_type_byte(meas_data_repeat_structure[7]);
+    }
     return ESP_OK;
 }
 
@@ -757,6 +1079,7 @@ static void nmea_parser_task_entry(void *arg)
 {
     esp_gps_t *esp_gps = (esp_gps_t *)arg;
     uart_event_t event;
+    int length = 0;
 
     /* 处理完整数据帧流程 */
 
@@ -769,18 +1092,16 @@ static void nmea_parser_task_entry(void *arg)
             switch (event.type)
             {
             case UART_DATA:
-                ESP_LOGI(GPS_TAG, "Dealing with UART_DATA event");
-
-                int length = 0;
+                // ESP_LOGI(GPS_TAG, "Dealing with UART_DATA event");
                 ESP_ERROR_CHECK(uart_get_buffered_data_len(esp_gps->uart_port, (size_t *)&length));
                 length = uart_read_bytes(esp_gps->uart_port, esp_gps->buffer, length, 1000 / portTICK_RATE_MS);
 
-                if (length > 0)
-                {
-                    esp_gps->buffer[length] = 0;
-                    ESP_LOGI(GPS_TAG, "Read %d bytes: '%s'", length, esp_gps->buffer);
-                    ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->buffer, length, ESP_LOG_INFO);
-                }
+                // if (length > 0)
+                // {
+                //     esp_gps->buffer[length] = 0;
+                //     ESP_LOGI(GPS_TAG, "Read %d bytes: '%s'", length, esp_gps->buffer);
+                //     ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->buffer, length, ESP_LOG_INFO);
+                // }
 
                 /* 判断本次读取的数据以何种方式进行处理 */
                 if (esp_gps->data_frame_buffer_length == 0)
@@ -815,11 +1136,13 @@ static void nmea_parser_task_entry(void *arg)
                     memcpy(esp_gps->data_frame_buffer_index, esp_gps->buffer, length);
                     esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer_index + length;
                     esp_gps->data_frame_buffer_length = esp_gps->data_frame_buffer_length + length;
-                    ESP_LOGI(GPS_TAG, "data_frame_buffer_length: %d", esp_gps->data_frame_buffer_length);
-                    ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length, ESP_LOG_INFO);
+                    // ESP_LOGI(GPS_TAG, "data_frame_buffer_length: %d", esp_gps->data_frame_buffer_length);
+                    // ESP_LOG_BUFFER_HEXDUMP(GPS_TAG, esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length, ESP_LOG_INFO);
 
                     if (esp_gps->data_frame_buffer_length == esp_gps->data_length + 8)
                     {
+                        ESP_LOGI(MEAS_TAG, "data_frame_buffer_length: %d", esp_gps->data_frame_buffer_length);
+                        ESP_LOG_BUFFER_HEXDUMP(MEAS_TAG, esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length, ESP_LOG_INFO);
                         meas_decode(esp_gps->data_frame_buffer, esp_gps->data_frame_buffer_length);
                         memset(esp_gps->data_frame_buffer, 0, sizeof(uint8_t) * TD0D01_DATA_FRAME_MAX_BUFFER_SIZE);
                         esp_gps->data_frame_buffer_index = esp_gps->data_frame_buffer;

@@ -34,6 +34,26 @@ extern "C"
    ESP_EVENT_DECLARE_BASE(ESP_NMEA_EVENT)
 
    /**
+ * @brief TD0D01 data type
+ *
+ */
+   typedef enum
+   {
+      I8S,  /*!< 0 */
+      I8U,  /*!< 1 */
+      I16S, /*!< 2 */
+      I16U, /*!< 3 */
+      I32S, /*!< 4 */
+      I32U, /*!< 5 */
+      F32,  /*!< 6 */
+      F64,  /*!< 7 */
+      B8,   /*!< 8 */
+      B16,  /*!< 9 */
+      B32,  /*!< 10 */
+      CH,   /*!< 11 */
+   } td0d01_data_t;
+
+   /**
  * @brief GPS fix type
  *
  */
@@ -91,6 +111,20 @@ extern "C"
    } gps_date_t;
 
    /**
+ * @brief Calendar time
+ *
+ */
+   typedef struct
+   {
+      uint8_t second; /*!< Second */
+      uint8_t minute; /*!< Minute */
+      uint8_t hour;   /*!< Hour */
+      uint8_t day;    /*!< Day */
+      uint8_t month;  /*!< Month */
+      uint16_t year;  /*!< Year */
+   } calendar_time_t;
+
+   /**
  * @brief NMEA Statement
  *
  */
@@ -137,9 +171,24 @@ extern "C"
  */
    typedef struct
    {
-      double latitude;                                                /*!< Latitude (degrees) */
-      float longitude;                                               /*!< Longitude (degrees) */
-   } gnss_meas_t;
+      uint8_t gnss_category;               /*!< GNSS类别 */
+      uint8_t satellite_id;                /*!< 卫星ID */
+      uint8_t cn0;                         /*!< CN0 */
+      double pseudorange;                        /*!< 伪距(m) */
+      double carrier_phase;                      /*!< 载波相位(cycles) */
+      float doppler;                             /*!< 多普勒(Hz) */
+      uint16_t carrier_phase_locking_time; /*!< 载波相位锁定时间 */
+      uint8_t sign;                              /*!< 标志 */
+   } gnss_meas_repeat_data;
+
+   typedef struct
+   {
+      double obs_second;                             /*!< 观测时刻TOW */
+      uint16_t obs_week;                       /*!< 观测时刻WN */
+      int8_t utc_leap_second;                   /*!< UTC闰秒 */
+      uint16_t obs_num;                         /*!< 观测量个数 */
+      gnss_meas_repeat_data observations[36]; /*!< 重复观测量数据 */
+   } gnss_meas_data_t;
 
    /**
  * @brief Configuration of NMEA Parser
